@@ -1,4 +1,4 @@
-# Miyabi
+# Miyabi [![Build Status](https://travis-ci.org/naoina/miyabi.png?branch=master)](https://travis-ci.org/naoina/miyabi)
 
 Graceful shutdown and restart for Go's `net/http` handlers.
 
