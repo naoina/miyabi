@@ -33,6 +33,14 @@ See [Godoc](http://godoc.org/github.com/naoina/miyabi) for more information.
 
 **NOTE**: Miyabi is using features of Go 1.3, so doesn't work in Go 1.2.x and older versions.
 
+## Graceful shutdown or restart
+
+By default, send `SIGTERM` or `SIGINT` (Ctrl + c) signal to a process that is using Miyabi in order to graceful shutdown and send `SIGHUP` signal in order to graceful restart.
+If you want to change the these signal, please set another signal to `miyabi.ShutdownSignal` and/or `miyabi.RestartSignal`.
+
+In fact, `miyabi.ListenAndServe` and `miyabi.ListenAndServeTLS` will fork a process that is using Miyabi in order to achieve the graceful restart.
+This means that you should write code as no side effects until the call of `miyabi.ListenAndServe` or `miyabi.ListenAndServeTLS`.
+
 ## License
 
 Miyabi licensed under the MIT.

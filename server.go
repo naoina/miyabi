@@ -3,78 +3,90 @@ package miyabi
 
 import (
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"reflect"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 )
 
 var (
-	// ShutdownSignal is signal for graceful shutdown.
+	// ShutdownSignal is the signal for graceful shutdown.
 	// syscall.SIGTERM by default. Please set another signal if you want.
 	ShutdownSignal = syscall.SIGTERM
+
+	// RestartSignal is the signal for graceful restart.
+	// syscall.SIGHUP by default. Please set another signal if you want.
+	RestartSignal = syscall.SIGHUP
+
+	// FDEnvKey is the environment variable name of inherited file descriptor for graceful restart.
+	FDEnvKey = "MIYABI_FD"
+
+	errNotForked = errors.New("server isn't forked")
 )
 
-// ListenAndServe acts like http.ListenAndServe but can be graceful shutdown.
+// ListenAndServe acts like http.ListenAndServe but can be graceful shutdown
+// and restart.
 func ListenAndServe(addr string, handler http.Handler) error {
 	server := &Server{Addr: addr, Handler: handler}
 	return server.ListenAndServe()
 }
 
-// ListenAndServeTLS acts like http.ListenAndServeTLS but can be graceful shutdown.
+// ListenAndServeTLS acts like http.ListenAndServeTLS but can be graceful
+// shutdown and restart.
 func ListenAndServeTLS(addr, certFile, keyFile string, handler http.Handler) error {
 	server := &Server{Addr: addr, Handler: handler}
 	return server.ListenAndServeTLS(certFile, keyFile)
 }
 
 // Server is similar to http.Server.
-// However, ListenAndServe, ListenAndServeTLS and Serve can be graceful shutdown.
+// However, ListenAndServe, ListenAndServeTLS and Serve can be graceful
+// shutdown and restart.
 type Server http.Server
 
-// ListenAndServe acts like http.Server.ListenAndServe but can be graceful shutdown.
+// ListenAndServe acts like http.Server.ListenAndServe but can be graceful
+// shutdown and restart.
 func (srv *Server) ListenAndServe() error {
-	addr := srv.Addr
-	if addr == "" {
-		addr = ":http"
+	if srv.isMaster() {
+		l, err := srv.listen()
+		if err != nil {
+			return err
+		}
+		return srv.supervise(l)
 	}
-	ln, err := net.Listen("tcp", addr)
+	ln, err := srv.listenerFromFDEnv()
 	if err != nil {
 		return err
 	}
 	return srv.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
 }
 
-// ListenAndServeTLS acts like http.Server.ListenAndServeTLS but can be graceful shutdown.
+// ListenAndServeTLS acts like http.Server.ListenAndServeTLS but can be
+// graceful shutdown and restart.
 func (srv *Server) ListenAndServeTLS(certFile, keyFile string) error {
-	addr := srv.Addr
-	if addr == "" {
-		addr = ":https"
+	if srv.isMaster() {
+		l, err := srv.listenTLS(certFile, keyFile)
+		if err != nil {
+			return err
+		}
+		return srv.supervise(l)
 	}
-	config := &tls.Config{}
-	if srv.TLSConfig != nil {
-		*config = *srv.TLSConfig
-	}
-	if config.NextProtos == nil {
-		config.NextProtos = []string{"http/1.1"}
-	}
-	var err error
-	config.Certificates = make([]tls.Certificate, 1)
-	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	ln, err := srv.listenerFromFDEnv()
 	if err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	tlsListener := tls.NewListener(tcpKeepAliveListener{ln.(*net.TCPListener)}, config)
-	return srv.Serve(tlsListener)
+	return srv.Serve(ln)
 }
 
 // Serve acts like http.Server.Serve but can be graceful shutdown.
+// If you want to graceful restart, use ListenAndServe or ListenAndServeTLS instead.
 func (srv *Server) Serve(l net.Listener) error {
 	conns := make(map[net.Conn]struct{})
 	var mu sync.Mutex
@@ -104,6 +116,40 @@ func (srv *Server) SetKeepAlivesEnabled(v bool) {
 	(*http.Server)(srv).SetKeepAlivesEnabled(v)
 }
 
+func (srv *Server) listen() (net.Listener, error) {
+	addr := srv.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+	return net.Listen("tcp", addr)
+}
+
+func (srv *Server) listenTLS(certFile, keyFile string) (net.Listener, error) {
+	addr := srv.Addr
+	if addr == "" {
+		addr = ":https"
+	}
+	config := &tls.Config{}
+	if srv.TLSConfig != nil {
+		*config = *srv.TLSConfig
+	}
+	if config.NextProtos == nil {
+		config.NextProtos = []string{"http/1.1"}
+	}
+	var err error
+	config.Certificates = make([]tls.Certificate, 1)
+	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	tlsListener := tls.NewListener(tcpKeepAliveListener{ln.(*net.TCPListener)}, config)
+	return tlsListener, nil
+}
+
 func (srv *Server) startWaitSignals(l net.Listener) {
 	c := make(chan os.Signal)
 	signal.Notify(c, syscall.SIGINT, ShutdownSignal)
@@ -112,9 +158,83 @@ func (srv *Server) startWaitSignals(l net.Listener) {
 		srv.SetKeepAlivesEnabled(false)
 		switch sig {
 		case syscall.SIGINT, ShutdownSignal:
+			signal.Stop(c)
 			l.Close()
 		}
 	}()
+}
+
+// isMaster returns whether the current process is master.
+func (srv *Server) isMaster() bool {
+	return os.Getenv(FDEnvKey) == ""
+}
+
+func (srv *Server) supervise(l net.Listener) error {
+	p, err := srv.forkExec(l)
+	if err != nil {
+		return err
+	}
+	c := make(chan os.Signal)
+	signal.Notify(c, syscall.SIGINT, ShutdownSignal, RestartSignal)
+	for {
+		switch sig := <-c; sig {
+		case RestartSignal:
+			child, err := srv.forkExec(l)
+			if err != nil {
+				return err
+			}
+			p.Signal(ShutdownSignal)
+			p.Wait()
+			p = child
+		case syscall.SIGINT, ShutdownSignal:
+			signal.Stop(c)
+			l.Close()
+			p.Signal(ShutdownSignal)
+			_, err := p.Wait()
+			return err
+		}
+	}
+}
+
+func (srv *Server) listenerFromFDEnv() (net.Listener, error) {
+	fd, err := srv.getFD()
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(fd, "listen socket")
+	defer file.Close()
+	return net.FileListener(file)
+}
+
+// getFD gets file descriptor of listen socket from environment variable.
+func (srv *Server) getFD() (uintptr, error) {
+	fdStr := os.Getenv(FDEnvKey)
+	if fdStr == "" {
+		return 0, errNotForked
+	}
+	fd, err := strconv.Atoi(fdStr)
+	if err != nil {
+		return 0, err
+	}
+	return uintptr(fd), nil
+}
+
+func (srv *Server) forkExec(l net.Listener) (*os.Process, error) {
+	progName, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		return nil, err
+	}
+	pwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	fd := uintptr(reflect.ValueOf(l).Elem().FieldByName("fd").Elem().FieldByName("sysfd").Int())
+	fdEnv := fmt.Sprintf("%s=%d", FDEnvKey, fd)
+	return os.StartProcess(progName, os.Args, &os.ProcAttr{
+		Dir:   pwd,
+		Env:   append(os.Environ(), fdEnv),
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr, os.NewFile(fd, "sysfile")},
+	})
 }
 
 // tcpKeepAliveListener is copy from net/http.
