@@ -96,3 +96,59 @@ func testServerServeGracefulShutdown(t *testing.T) {
 		t.Errorf("timeout")
 	}
 }
+
+func TestServerState_StateStart(t *testing.T) {
+	done := make(chan struct{})
+	origServerState := miyabi.ServerState
+	miyabi.ServerState = func(state miyabi.State) {
+		switch state {
+		case miyabi.StateStart:
+			done <- struct{}{}
+		}
+	}
+	defer func() {
+		miyabi.ServerState = origServerState
+	}()
+	go miyabi.ListenAndServe(addr, nil)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Errorf("timeout")
+	}
+}
+
+func TestServerState_StateShutdown(t *testing.T) {
+	done := make(chan struct{})
+	started := make(chan struct{})
+	origServerState := miyabi.ServerState
+	miyabi.ServerState = func(state miyabi.State) {
+		switch state {
+		case miyabi.StateStart:
+			started <- struct{}{}
+		case miyabi.StateShutdown:
+			done <- struct{}{}
+		}
+	}
+	defer func() {
+		miyabi.ServerState = origServerState
+	}()
+	go miyabi.ListenAndServe(addr, nil)
+	select {
+	case <-started:
+		pid := os.Getpid()
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.Signal(miyabi.ShutdownSignal); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Errorf("timeout")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Errorf("timeout")
+	}
+}

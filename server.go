@@ -26,6 +26,11 @@ var (
 	// syscall.SIGHUP by default. Please set another signal if you want.
 	RestartSignal = syscall.SIGHUP
 
+	// ServerState specifies the optional callback function that is called
+	// when the server changes state. See the State type and associated
+	// constants for details.
+	ServerState func(state State)
+
 	// FDEnvKey is the environment variable name of inherited file descriptor for graceful restart.
 	FDEnvKey = "MIYABI_FD"
 
@@ -174,6 +179,9 @@ func (srv *Server) supervise(l net.Listener) error {
 	if err != nil {
 		return err
 	}
+	if ServerState != nil {
+		ServerState(StateStart)
+	}
 	c := make(chan os.Signal)
 	signal.Notify(c, syscall.SIGINT, ShutdownSignal, RestartSignal)
 	for {
@@ -186,11 +194,17 @@ func (srv *Server) supervise(l net.Listener) error {
 			p.Signal(ShutdownSignal)
 			p.Wait()
 			p = child
+			if ServerState != nil {
+				ServerState(StateRestart)
+			}
 		case syscall.SIGINT, ShutdownSignal:
 			signal.Stop(c)
 			l.Close()
 			p.Signal(ShutdownSignal)
 			_, err := p.Wait()
+			if ServerState != nil {
+				ServerState(StateShutdown)
+			}
 			return err
 		}
 	}
@@ -251,4 +265,29 @@ func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(3 * time.Minute)
 	return tc, nil
+}
+
+// A State represents the state of the server.
+// It's used by the optional ServerState hook.
+type State int
+
+const (
+	// StateStart represents a state that server has been started.
+	StateStart State = iota
+
+	// StateRestart represents a state that server has been restarted.
+	StateRestart
+
+	// StateShutdown represents a state that server has been shutdown.
+	StateShutdown
+)
+
+var stateName = map[State]string{
+	StateStart:    "start",
+	StateRestart:  "restart",
+	StateShutdown: "shutdown",
+}
+
+func (s State) String() string {
+	return stateName[s]
 }
