@@ -113,6 +113,11 @@ func (srv *Server) Serve(l net.Listener) error {
 	srv.startWaitSignals(l)
 	err := (*http.Server)(srv).Serve(l)
 	wg.Wait()
+	if err, ok := err.(*net.OpError); ok {
+		if err.Op == "accept" && err.Err.Error() == "use of closed network connection" {
+			return nil
+		}
+	}
 	return err
 }
 

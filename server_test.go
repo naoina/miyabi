@@ -30,11 +30,23 @@ func TestServer_Serve(t *testing.T) {
 	})}
 	l := newTestListener(t)
 	defer l.Close()
-	go server.Serve(l)
+	go func() {
+		if err := server.Serve(l); err != nil {
+			t.Errorf("server.Serve(l) => %#v; want nil", err)
+		}
+		done <- struct{}{}
+	}()
 	_, err := http.Get("http://" + l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("timeout")
+	}
+
+	l.Close()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
