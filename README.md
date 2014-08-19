@@ -43,4 +43,4 @@ This means that you should write code as no side effects until the call of `miya
 
 ## License
 
-Miyabi licensed under the MIT.
+Miyabi is licensed under the MIT.
