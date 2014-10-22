@@ -66,11 +66,7 @@ func (srv *Server) ListenAndServe() error {
 			return err
 		}
 		if runtime.GOOS == "windows" {
-			err = srv.Serve(tcpKeepAliveListener{l.(*net.TCPListener)})
-			if err != nil {
-				err.Error()
-			}
-			return err
+			return srv.Serve(tcpKeepAliveListener{l.(*net.TCPListener)})
 		}
 		return srv.supervise(l)
 	}
