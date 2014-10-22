@@ -31,7 +31,7 @@ func main() {
 
 See [Godoc](http://godoc.org/github.com/naoina/miyabi) for more information.
 
-**NOTE**: Miyabi is using features of Go 1.3, so doesn't work in Go 1.2.x and older versions.
+**NOTE**: Miyabi is using features of Go 1.3, so doesn't work in Go 1.2.x and older versions. Also when using on Windows, it works but graceful shutdown/restart are disabled explicitly.
 
 ## Graceful shutdown or restart
 
