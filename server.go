@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"reflect"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -64,6 +65,13 @@ func (srv *Server) ListenAndServe() error {
 		if err != nil {
 			return err
 		}
+		if runtime.GOOS == "windows" {
+			err = srv.Serve(tcpKeepAliveListener{l.(*net.TCPListener)})
+			if err != nil {
+				err.Error()
+			}
+			return err
+		}
 		return srv.supervise(l)
 	}
 	ln, err := srv.listenerFromFDEnv()
@@ -114,7 +122,11 @@ func (srv *Server) Serve(l net.Listener) error {
 	err := (*http.Server)(srv).Serve(l)
 	wg.Wait()
 	if err, ok := err.(*net.OpError); ok {
-		if err.Op == "accept" && err.Err.Error() == "use of closed network connection" {
+		op := err.Op
+		if runtime.GOOS == "windows" && op == "AcceptEx" {
+			op = "accept"
+		}
+		if op == "accept" && err.Err.Error() == "use of closed network connection" {
 			return nil
 		}
 	}
