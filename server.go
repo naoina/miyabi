@@ -282,7 +282,7 @@ func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 
 // A State represents the state of the server.
 // It's used by the optional ServerState hook.
-type State int
+type State uint8
 
 const (
 	// StateStart represents a state that server has been started.
@@ -294,13 +294,3 @@ const (
 	// StateShutdown represents a state that server has been shutdown.
 	StateShutdown
 )
-
-var stateName = map[State]string{
-	StateStart:    "start",
-	StateRestart:  "restart",
-	StateShutdown: "shutdown",
-}
-
-func (s State) String() string {
-	return stateName[s]
-}
