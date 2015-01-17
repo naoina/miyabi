@@ -27,6 +27,10 @@ var (
 	// syscall.SIGHUP by default. Please set another signal if you want.
 	RestartSignal = syscall.SIGHUP
 
+	// Timeout specifies the timeout for terminate of the old process.
+	// A zero value disables the timeout.
+	Timeout = 3 * time.Minute
+
 	// ServerState specifies the optional callback function that is called
 	// when the server changes state. See the State type and associated
 	// constants for details.
@@ -205,7 +209,11 @@ func (srv *Server) supervise(l net.Listener) error {
 				return err
 			}
 			p.Signal(ShutdownSignal)
+			timer := time.AfterFunc(Timeout, func() {
+				p.Kill()
+			})
 			p.Wait()
+			timer.Stop()
 			p = child
 			if ServerState != nil {
 				ServerState(StateRestart)
@@ -214,7 +222,11 @@ func (srv *Server) supervise(l net.Listener) error {
 			signal.Stop(c)
 			l.Close()
 			p.Signal(ShutdownSignal)
+			timer := time.AfterFunc(Timeout, func() {
+				p.Kill()
+			})
 			_, err := p.Wait()
+			timer.Stop()
 			if ServerState != nil {
 				ServerState(StateShutdown)
 			}
