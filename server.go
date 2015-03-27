@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"reflect"
 	"runtime"
 	"strconv"
 	"sync"
@@ -138,15 +137,25 @@ func (srv *Server) SetKeepAlivesEnabled(v bool) {
 	(*http.Server)(srv).SetKeepAlivesEnabled(v)
 }
 
-func (srv *Server) listen() (net.Listener, error) {
+type listener interface {
+	net.Listener
+
+	File() (*os.File, error)
+}
+
+func (srv *Server) listen() (listener, error) {
 	addr := srv.Addr
 	if addr == "" {
 		addr = ":http"
 	}
-	return net.Listen("tcp", addr)
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return l.(listener), nil
 }
 
-func (srv *Server) listenTLS(certFile, keyFile string) (net.Listener, error) {
+func (srv *Server) listenTLS(certFile, keyFile string) (listener, error) {
 	addr := srv.Addr
 	if addr == "" {
 		addr = ":https"
@@ -169,7 +178,7 @@ func (srv *Server) listenTLS(certFile, keyFile string) (net.Listener, error) {
 		return nil, err
 	}
 	tlsListener := tls.NewListener(tcpKeepAliveListener{ln.(*net.TCPListener)}, config)
-	return tlsListener, nil
+	return tlsListener.(listener), nil
 }
 
 func (srv *Server) startWaitSignals(l net.Listener) {
@@ -191,7 +200,7 @@ func (srv *Server) isMaster() bool {
 	return os.Getenv(FDEnvKey) == ""
 }
 
-func (srv *Server) supervise(l net.Listener) error {
+func (srv *Server) supervise(l listener) error {
 	p, err := srv.forkExec(l)
 	if err != nil {
 		return err
@@ -258,7 +267,7 @@ func (srv *Server) getFD() (uintptr, error) {
 	return uintptr(fd), nil
 }
 
-func (srv *Server) forkExec(l net.Listener) (*os.Process, error) {
+func (srv *Server) forkExec(l listener) (*os.Process, error) {
 	progName, err := exec.LookPath(os.Args[0])
 	if err != nil {
 		return nil, err
@@ -267,12 +276,17 @@ func (srv *Server) forkExec(l net.Listener) (*os.Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	fd := uintptr(reflect.ValueOf(l).Elem().FieldByName("fd").Elem().FieldByName("sysfd").Int())
-	fdEnv := fmt.Sprintf("%s=%d", FDEnvKey, fd)
+	f, err := l.File()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	files := []*os.File{os.Stdin, os.Stdout, os.Stderr, f}
+	fdEnv := fmt.Sprintf("%s=%d", FDEnvKey, len(files)-1)
 	return os.StartProcess(progName, os.Args, &os.ProcAttr{
 		Dir:   pwd,
 		Env:   append(os.Environ(), fdEnv),
-		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr, os.NewFile(fd, "sysfile")},
+		Files: files,
 	})
 }
 
