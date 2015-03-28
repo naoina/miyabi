@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -43,6 +44,8 @@ var (
 
 // ListenAndServe acts like http.ListenAndServe but can be graceful shutdown
 // and restart.
+// If addr begin with "unix:", will listen on a Unix domain socket instead of
+// TCP.
 func ListenAndServe(addr string, handler http.Handler) error {
 	server := &Server{Addr: addr, Handler: handler}
 	return server.ListenAndServe()
@@ -61,15 +64,30 @@ func ListenAndServeTLS(addr, certFile, keyFile string, handler http.Handler) err
 type Server http.Server
 
 // ListenAndServe acts like http.Server.ListenAndServe but can be graceful
-// shutdown and restart.
+// shutdown and restart. If srv.Addr begin with "unix:", will listen on a Unix
+// domain socket instead of TCP.
 func (srv *Server) ListenAndServe() error {
-	if srv.isMaster() {
-		l, err := srv.listen()
+	addr := srv.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+	if runtime.GOOS == "windows" {
+		l, err := srv.listenTCP(addr)
 		if err != nil {
 			return err
 		}
-		if runtime.GOOS == "windows" {
-			return srv.Serve(tcpKeepAliveListener{l.(*net.TCPListener)})
+		return srv.Serve(l)
+	}
+	if srv.isMaster() {
+		var l listener
+		var err error
+		if strings.HasPrefix(addr, "unix:") {
+			l, err = srv.listenUnix(addr[len("unix:"):])
+		} else {
+			l, err = srv.listenTCP(addr)
+		}
+		if err != nil {
+			return err
 		}
 		return srv.supervise(l)
 	}
@@ -77,7 +95,7 @@ func (srv *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	return srv.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
+	return srv.Serve(ln)
 }
 
 // ListenAndServeTLS acts like http.Server.ListenAndServeTLS but can be
@@ -143,16 +161,24 @@ type listener interface {
 	File() (*os.File, error)
 }
 
-func (srv *Server) listen() (listener, error) {
-	addr := srv.Addr
-	if addr == "" {
-		addr = ":http"
-	}
-	l, err := net.Listen("tcp", addr)
+func (srv *Server) listenUnix(addr string) (listener, error) {
+	laddr, err := net.ResolveUnixAddr("unix", addr)
 	if err != nil {
 		return nil, err
 	}
-	return l.(listener), nil
+	return net.ListenUnix("unix", laddr)
+}
+
+func (srv *Server) listenTCP(addr string) (*tcpKeepAliveListener, error) {
+	laddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	l, err := net.ListenTCP("tcp", laddr)
+	if err != nil {
+		return nil, err
+	}
+	return &tcpKeepAliveListener{l}, nil
 }
 
 func (srv *Server) listenTLS(certFile, keyFile string) (listener, error) {
@@ -173,11 +199,11 @@ func (srv *Server) listenTLS(certFile, keyFile string) (listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	ln, err := net.Listen("tcp", addr)
+	ln, err := srv.listenTCP(addr)
 	if err != nil {
 		return nil, err
 	}
-	tlsListener := tls.NewListener(tcpKeepAliveListener{ln.(*net.TCPListener)}, config)
+	tlsListener := tls.NewListener(ln, config)
 	return tlsListener.(listener), nil
 }
 
@@ -251,7 +277,20 @@ func (srv *Server) listenerFromFDEnv() (net.Listener, error) {
 	}
 	file := os.NewFile(fd, "listen socket")
 	defer file.Close()
-	return net.FileListener(file)
+	l, err := net.FileListener(file)
+	if err != nil {
+		return nil, err
+	}
+	if l, ok := l.(*net.UnixListener); ok {
+		addr := l.Addr().String()
+		if _, err := os.Stat(addr); err == nil {
+			if err := os.Remove(addr); err != nil {
+				return nil, err
+			}
+		}
+		return srv.listenUnix(addr)
+	}
+	return tcpKeepAliveListener{l.(*net.TCPListener)}, nil
 }
 
 // getFD gets file descriptor of listen socket from environment variable.
