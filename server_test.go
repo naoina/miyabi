@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -167,6 +168,8 @@ func TestServerState_StateShutdown(t *testing.T) {
 }
 
 func TestIsMaster(t *testing.T) {
+	origEnv := make([]string, len(os.Environ()))
+	copy(origEnv, os.Environ())
 	for _, v := range []struct {
 		env    string
 		expect bool
@@ -175,7 +178,13 @@ func TestIsMaster(t *testing.T) {
 		{"UNKNOWN_KEY", true},
 	} {
 		func() {
-			defer os.Unsetenv(v.env)
+			defer func() {
+				os.Clearenv()
+				for _, v := range origEnv {
+					env := strings.SplitN(v, "=", 2)
+					os.Setenv(env[0], env[1])
+				}
+			}()
 			if err := os.Setenv(v.env, "1"); err != nil {
 				t.Error(err)
 				return
