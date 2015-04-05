@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"syscall"
 	"testing"
 	"time"
@@ -162,5 +163,28 @@ func TestServerState_StateShutdown(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Errorf("timeout")
+	}
+}
+
+func TestIsMaster(t *testing.T) {
+	for _, v := range []struct {
+		env    string
+		expect bool
+	}{
+		{miyabi.FDEnvKey, false},
+		{"UNKNOWN_KEY", true},
+	} {
+		func() {
+			defer os.Unsetenv(v.env)
+			if err := os.Setenv(v.env, "1"); err != nil {
+				t.Error(err)
+				return
+			}
+			actual := miyabi.IsMaster()
+			expect := v.expect
+			if !reflect.DeepEqual(actual, expect) {
+				t.Errorf(`IsMaster() with %v=1 => %#v; want %#v`, v.env, actual, expect)
+			}
+		}()
 	}
 }

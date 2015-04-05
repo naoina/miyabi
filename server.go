@@ -78,7 +78,7 @@ func (srv *Server) ListenAndServe() error {
 		}
 		return srv.Serve(l)
 	}
-	if srv.isMaster() {
+	if IsMaster() {
 		var l listener
 		var err error
 		if strings.HasPrefix(addr, "unix:") {
@@ -101,7 +101,7 @@ func (srv *Server) ListenAndServe() error {
 // ListenAndServeTLS acts like http.Server.ListenAndServeTLS but can be
 // graceful shutdown and restart.
 func (srv *Server) ListenAndServeTLS(certFile, keyFile string) error {
-	if srv.isMaster() {
+	if IsMaster() {
 		l, err := srv.listenTLS(certFile, keyFile)
 		if err != nil {
 			return err
@@ -221,11 +221,6 @@ func (srv *Server) startWaitSignals(l net.Listener) {
 	}()
 }
 
-// isMaster returns whether the current process is master.
-func (srv *Server) isMaster() bool {
-	return os.Getenv(FDEnvKey) == ""
-}
-
 func (srv *Server) supervise(l listener) error {
 	p, err := srv.forkExec(l)
 	if err != nil {
@@ -343,6 +338,11 @@ func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(3 * time.Minute)
 	return tc, nil
+}
+
+// IsMaster returns whether the current process is master.
+func IsMaster() bool {
+	return os.Getenv(FDEnvKey) == ""
 }
 
 // A State represents the state of the server.
